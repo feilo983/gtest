@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Particle Morphing</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000010; /* Dark space blue */
+            color: #eee;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        canvas {
+            display: block;
+            background-color: transparent; /* Canvas itself is transparent */
+        }
+        #controls {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(30, 30, 50, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            box-shadow: 0 0 15px rgba(100, 100, 255, 0.5);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        button, .color-btn {
+            background-color: #333;
+            color: #eee;
+            border: 1px solid #555;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-family: 'Courier New', Courier, monospace;
+            transition: background-color 0.3s, transform 0.1s;
+        }
+        button:hover, .color-btn:hover {
+            background-color: #555;
+        }
+        button:active, .color-btn:active {
+            transform: scale(0.95);
+        }
+        #color-selectors {
+            display: flex;
+            gap: 8px;
+        }
+        .color-btn {
+            width: 30px;
+            height: 30px;
+            padding: 0;
+            border-radius: 50%;
+        }
+        #info-display {
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(20, 20, 40, 0.7);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div id="info-display">Shape: Sphere (Click to morph)</div>
+    <canvas id="particleCanvas"></canvas>
+    <div id="controls">
+        <button id="changeShapeBtn">Change Shape</button>
+        <div id="color-selectors">
+            <button class="color-btn" data-color="255,200,50" style="background: orange;"></button>
+            <button class="color-btn" data-color="150,50,255" style="background: purple;"></button>
+            <button class="color-btn" data-color="50,255,100" style="background: limegreen;"></button>
+            <button class="color-btn" data-color="rainbow" style="background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);"></button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('particleCanvas');
+        const ctx = canvas.getContext('2d');
+        const infoDisplay = document.getElementById('info-display');
+        const changeShapeBtn = document.getElementById('changeShapeBtn');
+        const colorButtons = document.querySelectorAll('.color-btn');
+
+        let width, height;
+        let particles = [];
+        const NUM_PARTICLES = 5000; // Number of particles
+        const PARTICLE_SIZE = 1.5;
+        const MORPH_SPEED = 0.05; // How fast particles move to new target
+        const FOV = 300; // Field of View for perspective
+
+        let currentShapeIndex = 0;
+        let shapes = [];
+        let isMorphing = false;
+        let currentParticleColor = [255, 200, 50]; // Default: orange-yellow
+        let isRainbowMode = false;
+
+        let cameraAngleX = 0;
+        let cameraAngleY = 0;
+        let targetAngleX = 0;
+        let targetAngleY = 0;
+        let mouseX = 0, mouseY = 0;
+        let isMouseDown = false;
+        let lastMouseX = 0, lastMouseY = 0;
+
+        // --- Particle Class ---
+        class Particle {
+            constructor(x, y, z) {
+                this.x = x || 0;
+                this.y = y || 0;
+                this.z = z || 0;
+                this.targetX = x || 0;
+                this.targetY = y || 0;
+                this.targetZ = z || 0;
+                this.color = `rgba(${currentParticleColor[0]}, ${currentParticleColor[1]}, ${currentParticleColor[2]}, 1)`;
+            }
+
+            update() {
+                // Morphing
+                this.x += (this.targetX - this.x) * MORPH_SPEED;
+                this.y += (this.targetY - this.y) * MORPH_SPEED;
+                this.z += (this.targetZ - this.z) * MORPH_SPEED;
+            }
+
+            project() {
+                // Simple perspective projection
+                const scale = FOV / (FOV + this.z);
+                const x2d = (this.x * scale) + width / 2;
+                const y2d = (this.y * scale) + height / 2;
+                return { x: x2d, y: y2d, scale: Math.max(0, scale) }; // Ensure scale is not negative
+            }
+
+            draw() {
+                const proj = this.project();
+                if (proj.x < 0 || proj.x > width || proj.y < 0 || proj.y > height || proj.scale <= 0) {
+                    return; // Don't draw if off-screen or behind camera
+                }
+
+                let r, g, b;
+                if (isRainbowMode) {
+                    // Simple rainbow effect based on original Y position or index
+                    const hue = ( (this.targetY / 150) * 360 + Date.now() * 0.01) % 360;
+                    [r, g, b] = hslToRgb(hue / 360, 0.8, 0.6);
+                } else {
+                    [r, g, b] = currentParticleColor;
+                }
+                
+                // Dim particles further away
+                const alpha = Math.min(1, Math.max(0.1, proj.scale * 1.5)); // Scale alpha with distance
+                ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+                ctx.beginPath();
+                ctx.arc(proj.x, proj.y, PARTICLE_SIZE * proj.scale, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // --- Shape Generation Functions ---
+        // (These functions should return an array of {x, y, z} objects)
+
+        function createSpherePoints(radius = 150, count = NUM_PARTICLES) {
+            const points = [];
+            const phi = Math.PI * (3.0 - Math.sqrt(5.0)); // Golden angle
+            for (let i = 0; i < count; i++) {
+                const y = 1 - (i / (count - 1)) * 2; // y goes from 1 to -1
+                const r = Math.sqrt(1 - y * y);
+                const theta = phi * i;
+                const x = Math.cos(theta) * r * radius;
+                const z = Math.sin(theta) * r * radius;
+                points.push({ x, y: y * radius, z });
+            }
+            return points;
+        }
+
+        function createCubePoints(size = 200, count = NUM_PARTICLES) {
+            const points = [];
+            const pointsPerFace = Math.ceil(count / 6);
+            const halfSize = size / 2;
+
+            for (let face = 0; face < 6; face++) {
+                for (let i = 0; i < pointsPerFace; i++) {
+                    let x, y, z;
+                    const u = Math.random() * size - halfSize;
+                    const v = Math.random() * size - halfSize;
+                    switch (face) {
+                        case 0: x = halfSize; y = u; z = v; break; // Right
+                        case 1: x = -halfSize; y = u; z = v; break; // Left
+                        case 2: y = halfSize; x = u; z = v; break; // Top
+                        case 3: y = -halfSize; x = u; z = v; break; // Bottom
+                        case 4: z = halfSize; x = u; y = v; break; // Front
+                        case 5: z = -halfSize; x = u; y = v; break; // Back
+                    }
+                    points.push({ x, y, z });
+                }
+            }
+            return points.slice(0, count); // Ensure exact count
+        }
+
+        function createTorusPoints(majorRadius = 120, minorRadius = 50, count = NUM_PARTICLES) {
+            const points = [];
+            for (let i = 0; i < count; i++) {
+                const u = Math.random() * 2 * Math.PI; // Angle around major circle
+                const v = Math.random() * 2 * Math.PI; // Angle around minor circle
+
+                const x = (majorRadius + minorRadius * Math.cos(v)) * Math.cos(u);
+                const y = (majorRadius + minorRadius * Math.cos(v)) * Math.sin(u);
+                const z = minorRadius * Math.sin(v);
+                points.push({ x, y, z });
+            }
+            return points;
+        }
+        
+        function createPyramidPoints(baseSize = 200, height = 150, count = NUM_PARTICLES) {
+            const points = [];
+            const halfBase = baseSize / 2;
+            const pointsOnBase = Math.floor(count * 0.4); // 40% on base
+            const pointsOnSides = count - pointsOnBase;
+            const pointsPerSideFace = Math.ceil(pointsOnSides / 4);
+
+            // Base points
+            for (let i = 0; i < pointsOnBase; i++) {
+                points.push({
+                    x: Math.random() * baseSize - halfBase,
+                    y: -height / 2, // Base at bottom
+                    z: Math.random() * baseSize - halfBase
+                });
+            }
+
+            // Side face points
+            const vertices = [
+                { x: -halfBase, y: -height / 2, z: -halfBase }, // A
+                { x:  halfBase, y: -height / 2, z: -halfBase }, // B
+                { x:  halfBase, y: -height / 2, z:  halfBase }, // C
+                { x: -halfBase, y: -height / 2, z:  halfBase }, // D
+                { x: 0, y: height / 2, z: 0 } // Apex (T)
+            ];
+
+            const faces = [
+                [vertices[4], vertices[0], vertices[1]], // TAB
+                [vertices[4], vertices[1], vertices[2]], // TBC
+                [vertices[4], vertices[2], vertices[3]], // TCD
+                [vertices[4], vertices[3], vertices[0]], // TDA
+            ];
+
+            for (const face of faces) {
+                for (let i = 0; i < pointsPerSideFace; i++) {
+                    const r1 = Math.random();
+                    const r2 = Math.random();
+                    // Barycentric coordinates for a point in triangle
+                    let s = Math.sqrt(r1) * (1-r2);
+                    let t = Math.sqrt(r1) * r2;
+                    
+                    points.push({
+                        x: (1 - s - t) * face[0].x + s * face[1].x + t * face[2].x,
+                        y: (1 - s - t) * face[0].y + s * face[1].y + t * face[2].y,
+                        z: (1 - s - t) * face[0].z + s * face[1].z + t * face[2].z,
+                    });
+                }
+            }
+            return points.slice(0, count);
+        }
+
+
+        function createGalaxyPoints(radius = 200, arms = 3, spread = 0.5, thickness = 30, count = NUM_PARTICLES) {
+            const points = [];
+            const centralBulgeCount = Math.floor(count * 0.2); // 20% for bulge
+            const armPointsCount = count - centralBulgeCount;
+            const pointsPerArm = Math.floor(armPointsCount / arms);
+
+            // Central bulge (like a sphere)
+            const bulgeRadius = radius * 0.3;
+            const phi = Math.PI * (3. - Math.sqrt(5.));
+            for (let i = 0; i < centralBulgeCount; i++) {
+                const y_b = (1 - (i / (centralBulgeCount - 1)) * 2) * (bulgeRadius * 0.5); // flatter bulge
+                const r_b = Math.sqrt(1 - (y_b / (bulgeRadius * 0.5))**2 ) * bulgeRadius;
+                const theta_b = phi * i;
+                const x_b = Math.cos(theta_b) * r_b;
+                const z_b = Math.sin(theta_b) * r_b;
+                points.push({ x: x_b, y: y_b, z: z_b });
+            }
+            
+            // Spiral Arms
+            for (let j = 0; j < arms; j++) {
+                const angleOffset = (j / arms) * 2 * Math.PI;
+                for (let i = 0; i < pointsPerArm; i++) {
+                    const dist = (i / pointsPerArm) * radius * 0.8 + radius * 0.2; // Start away from center
+                    const angle = angleOffset + (dist / radius) * Math.PI * spread + (Math.random()-0.5) * 0.5;
+                    
+                    const x = dist * Math.cos(angle);
+                    const y = dist * Math.sin(angle);
+                    const z = (Math.random() - 0.5) * thickness * (1 - dist/radius); // Thicker towards center
+                    
+                    // Rotate galaxy slightly to make it not flat on XY plane
+                    const rotX = Math.PI / 6; // 30 deg rotation
+                    const rotatedY = y * Math.cos(rotX) - z * Math.sin(rotX);
+                    const rotatedZ = y * Math.sin(rotX) + z * Math.cos(rotX);
+
+                    points.push({ x: x, y: rotatedY, z: rotatedZ });
+                }
+            }
+            return points.slice(0, count);
+        }
+
+        function createWavePoints(size = 250, amplitude = 50, frequency = 0.05, count = NUM_PARTICLES) {
+            const points = [];
+            const pointsPerRow = Math.floor(Math.sqrt(count));
+            for (let i = 0; i < pointsPerRow; i++) {
+                for (let j = 0; j < pointsPerRow; j++) {
+                    const x = (i / (pointsPerRow -1) - 0.5) * size;
+                    const z = (j / (pointsPerRow -1) - 0.5) * size;
+                    const dist = Math.sqrt(x*x + z*z);
+                    const y = amplitude * Math.sin(dist * frequency) * Math.cos(Math.atan2(z,x) * 2); // Circular wave with some angular variation
+                    points.push({x, y, z});
+                }
+            }
+             // If not enough points, fill randomly within bounds
+            while (points.length < count) {
+                const x = (Math.random() - 0.5) * size;
+                const z = (Math.random() - 0.5) * size;
+                const dist = Math.sqrt(x*x + z*z);
+                const y = amplitude * Math.sin(dist * frequency) * Math.cos(Math.atan2(z,x) * 2);
+                points.push({x, y, z});
+            }
+            return points.slice(0, count);
+        }
+
+
+        // --- Initialize Shapes ---
+        shapes = [
+            { name: "Sphere", generator: createSpherePoints },
+            { name: "Cube", generator: createCubePoints },
+            { name: "Pyramid", generator: createPyramidPoints },
+            { name: "Torus", generator: createTorusPoints },
+            { name: "Galaxy", generator: createGalaxyPoints },
+            { name: "Wave", generator: createWavePoints }
+        ];
+
+        // --- Morphing Function ---
+        function morphToShape(shapeIndex) {
+            if (isMorphing) return;
+            isMorphing = true;
+            infoDisplay.textContent = "Morphing...";
+
+            currentShapeIndex = shapeIndex % shapes.length;
+            const newShapeData = shapes[currentShapeIndex].generator();
+
+            particles.forEach((particle, i) => {
+                const target = newShapeData[i % newShapeData.length]; // Cycle through target points if not enough
+                particle.targetX = target.x;
+                particle.targetY = target.y;
+                particle.targetZ = target.z;
+            });
+
+            // Check when morphing is "done" (particles are close to target)
+            let checkMorphInterval = setInterval(() => {
+                let allSettled = true;
+                for (let p of particles) {
+                    if (Math.abs(p.x - p.targetX) > 0.1 ||
+                        Math.abs(p.y - p.targetY) > 0.1 ||
+                        Math.abs(p.z - p.targetZ) > 0.1) {
+                        allSettled = false;
+                        break;
+                    }
+                }
+                if (allSettled) {
+                    isMorphing = false;
+                    infoDisplay.textContent = `Shape: ${shapes[currentShapeIndex].name} (Click to morph)`;
+                    clearInterval(checkMorphInterval);
+                }
+            }, 100);
+        }
+
+        // --- Setup ---
+        function setup() {
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+
+            // Mouse controls for rotation
+            canvas.addEventListener('mousedown', (e) => {
+                isMouseDown = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            });
+            document.addEventListener('mouseup', () => {
+                isMouseDown = false;
+            });
+            document.addEventListener('mousemove', (e) => {
+                if (!isMouseDown) return;
+                const dx = e.clientX - lastMouseX;
+                const dy = e.clientY - lastMouseY;
+                targetAngleY += dx * 0.005;
+                targetAngleX -= dy * 0.005; // Invert Y for natural feel
+                // Clamp targetAngleX to avoid flipping
+                targetAngleX = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, targetAngleX));
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            });
+             // Touch controls for rotation
+            canvas.addEventListener('touchstart', (e) => {
+                isMouseDown = true;
+                lastMouseX = e.touches[0].clientX;
+                lastMouseY = e.touches[0].clientY;
+                e.preventDefault(); // Prevent scrolling
+            }, { passive: false });
+            document.addEventListener('touchend', () => {
+                isMouseDown = false;
+            });
+            document.addEventListener('touchmove', (e) => {
+                if (!isMouseDown || !e.touches[0]) return;
+                const dx = e.touches[0].clientX - lastMouseX;
+                const dy = e.touches[0].clientY - lastMouseY;
+                targetAngleY += dx * 0.005;
+                targetAngleX -= dy * 0.005;
+                targetAngleX = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, targetAngleX));
+                lastMouseX = e.touches[0].clientX;
+                lastMouseY = e.touches[0].clientY;
+                e.preventDefault();
+            }, { passive: false });
+
+
+            // Create particles
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                particles.push(new Particle(
+                    (Math.random() - 0.5) * 50,
+                    (Math.random() - 0.5) * 50,
+                    (Math.random() - 0.5) * 50
+                ));
+            }
+            morphToShape(0); // Initial shape
+
+            changeShapeBtn.addEventListener('click', () => {
+                if (isMorphing) return;
+                morphToShape(currentShapeIndex + 1);
+            });
+
+            colorButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const colorData = btn.dataset.color;
+                    if (colorData === "rainbow") {
+                        isRainbowMode = true;
+                    } else {
+                        isRainbowMode = false;
+                        currentParticleColor = colorData.split(',').map(Number);
+                    }
+                });
+            });
+            
+            infoDisplay.addEventListener('click', () => { // Allow clicking the info text to morph too
+                if (isMorphing) return;
+                morphToShape(currentShapeIndex + 1);
+            });
+
+
+            animate();
+        }
+
+        function resizeCanvas() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            // Smooth camera rotation
+            cameraAngleX += (targetAngleX - cameraAngleX) * 0.1;
+            cameraAngleY += (targetAngleY - cameraAngleY) * 0.1;
+
+            ctx.clearRect(0, 0, width, height);
+
+            // Sort particles by Z for pseudo-3D (painter's algorithm) - optional, can be slow
+            // particles.sort((a, b) => b.z - a.z); 
+
+            particles.forEach(particle => {
+                particle.update();
+
+                // Rotate particle around origin (camera rotation)
+                const cosX = Math.cos(cameraAngleX);
+                const sinX = Math.sin(cameraAngleX);
+                const cosY = Math.cos(cameraAngleY);
+                const sinY = Math.sin(cameraAngleY);
+
+                // Y-axis rotation
+                let rotX = particle.x * cosY - particle.z * sinY;
+                let rotZ = particle.x * sinY + particle.z * cosY;
+                // X-axis rotation
+                let rotY = particle.y * cosX - rotZ * sinX;
+                rotZ = particle.y * sinX + rotZ * cosX;
+                
+                // Create a temporary particle for drawing with rotated coords
+                const tempParticle = new Particle(rotX, rotY, rotZ);
+                if (isRainbowMode) { // Pass target Y for consistent rainbow coloring
+                    tempParticle.targetY = particle.targetY;
+                }
+                tempParticle.draw();
+            });
+
+            requestAnimationFrame(animate);
+        }
+
+        // HSL to RGB converter (for rainbow)
+        function hslToRgb(h, s, l) {
+            let r, g, b;
+            if (s == 0) {
+                r = g = b = l; // achromatic
+            } else {
+                const hue2rgb = (p, q, t) => {
+                    if (t < 0) t += 1;
+                    if (t > 1) t -= 1;
+                    if (t < 1/6) return p + (q - p) * 6 * t;
+                    if (t < 1/2) return q;
+                    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                    return p;
+                }
+                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                const p = 2 * l - q;
+                r = hue2rgb(p, q, h + 1/3);
+                g = hue2rgb(p, q, h);
+                b = hue2rgb(p, q, h - 1/3);
+            }
+            return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+        }
+
+        // --- Start ---
+        setup();
+    </script>
+</body>
+</html>
